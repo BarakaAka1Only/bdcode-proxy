@@ -7,11 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net"
-
-	"log"
 	"strings"
 
 	"github.com/hasirciogluhq/xdatabase-proxy/cmd/proxy/internal/core"
+	"github.com/hasirciogluhq/xdatabase-proxy/cmd/proxy/internal/logger"
 )
 
 const (
@@ -49,9 +48,9 @@ func (h *PostgresHandler) sendErrorResponse(conn net.Conn, errResp *ErrorRespons
 
 	_, writeErr := conn.Write(msg)
 	if writeErr != nil {
-		log.Printf("Error sending error response to %s: %v", conn.RemoteAddr(), writeErr)
+		logger.Error("Error sending error response", "remote_addr", conn.RemoteAddr(), "error", writeErr)
 	} else {
-		log.Printf("Sent error response to %s: Sev=%s Code=%s Msg=%s", conn.RemoteAddr(), errResp.Severity, errResp.Code, errResp.Message)
+		logger.Info("Sent error response", "remote_addr", conn.RemoteAddr(), "severity", errResp.Severity, "code", errResp.Code, "message", errResp.Message)
 	}
 	return writeErr
 }
@@ -94,6 +93,12 @@ func (h *PostgresHandler) Handshake(conn net.Conn) (core.RoutingMetadata, net.Co
 				return nil, nil, fmt.Errorf("tls handshake failed: %w", err)
 			}
 
+			state := tlsConn.ConnectionState()
+			logger.Info("TLS Handshake successful",
+				"protocol", tlsVersionName(state.Version),
+				"cipher_suite", tls.CipherSuiteName(state.CipherSuite),
+				"remote_addr", conn.RemoteAddr())
+
 			// Recursively parse the StartupMessage from the encrypted stream
 			return h.Handshake(tlsConn)
 		}
@@ -134,6 +139,7 @@ func (h *PostgresHandler) Handshake(conn net.Conn) (core.RoutingMetadata, net.Co
 	// Parse username to extract deployment_id and pool status
 	// Format: username.deployment_id[.pool]
 	if user, ok := params["user"]; ok {
+		logger.Info("Connection requested", "user", user, "remote_addr", conn.RemoteAddr())
 		parts := strings.Split(user, ".")
 		if len(parts) >= 2 {
 			// Check for .pool suffix
@@ -247,4 +253,19 @@ func rebuildStartupMessage(protocolVersion uint32, params map[string]string) []b
 	}
 	newMessage[offset] = 0
 	return newMessage
+}
+
+func tlsVersionName(version uint16) string {
+	switch version {
+	case tls.VersionTLS10:
+		return "TLSv1.0"
+	case tls.VersionTLS11:
+		return "TLSv1.1"
+	case tls.VersionTLS12:
+		return "TLSv1.2"
+	case tls.VersionTLS13:
+		return "TLSv1.3"
+	default:
+		return fmt.Sprintf("Unknown (%x)", version)
+	}
 }

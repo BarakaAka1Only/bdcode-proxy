@@ -2,9 +2,10 @@ package api
 
 import (
 	"context"
-	"log"
 	"net/http"
 	"sync/atomic"
+
+	"github.com/hasirciogluhq/xdatabase-proxy/cmd/proxy/internal/logger"
 )
 
 type HealthServer struct {
@@ -32,9 +33,9 @@ func NewHealthServer(addr string) *HealthServer {
 
 func (s *HealthServer) Start() {
 	go func() {
-		log.Printf("Health server listening on %s", s.server.Addr)
+		logger.Info("Health server listening", "addr", s.server.Addr)
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("Health server error: %v", err)
+			logger.Error("Health server error", "error", err)
 		}
 	}()
 }

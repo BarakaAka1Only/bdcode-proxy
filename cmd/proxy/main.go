@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"log"
 	"net"
 	"os"
 
@@ -11,6 +10,7 @@ import (
 	"github.com/hasirciogluhq/xdatabase-proxy/cmd/proxy/internal/core"
 	"github.com/hasirciogluhq/xdatabase-proxy/cmd/proxy/internal/discovery/kubernetes"
 	"github.com/hasirciogluhq/xdatabase-proxy/cmd/proxy/internal/discovery/memory"
+	"github.com/hasirciogluhq/xdatabase-proxy/cmd/proxy/internal/logger"
 	"github.com/hasirciogluhq/xdatabase-proxy/cmd/proxy/internal/protocol/postgresql"
 	"github.com/hasirciogluhq/xdatabase-proxy/cmd/proxy/internal/storage/filesystem"
 	"github.com/hasirciogluhq/xdatabase-proxy/cmd/proxy/internal/utils"
@@ -20,11 +20,12 @@ import (
 )
 
 func main() {
-	log.Println("Starting xdatabase-proxy...")
+	logger.Init()
+	logger.Info("Starting xdatabase-proxy...")
 
 	// Check if proxy is enabled
 	if os.Getenv("POSTGRESQL_PROXY_ENABLED") != "true" {
-		log.Println("PostgreSQL proxy is not enabled (POSTGRESQL_PROXY_ENABLED != true)")
+		logger.Warn("PostgreSQL proxy is not enabled (POSTGRESQL_PROXY_ENABLED != true)")
 		// We might still want to run health checks or just exit?
 		// For now, let's assume we just block or exit.
 		// But usually a pod runs the proxy if it's deployed.
@@ -42,10 +43,10 @@ func main() {
 	var clientset *k8s.Clientset
 
 	if staticBackends := os.Getenv("STATIC_BACKENDS"); staticBackends != "" {
-		log.Println("Using Memory Resolver (STATIC_BACKENDS set)")
+		logger.Info("Using Memory Resolver (STATIC_BACKENDS set)")
 		memResolver, err := memory.NewResolver(staticBackends)
 		if err != nil {
-			log.Fatalf("Failed to create memory resolver: %v", err)
+			logger.Fatal("Failed to create memory resolver", "error", err)
 		}
 		resolver = memResolver
 	} else {
@@ -72,13 +73,13 @@ func main() {
 			// Fallback to in-cluster config
 			config, err = clientcmd.BuildConfigFromFlags("", "")
 			if err != nil {
-				log.Fatalf("Failed to build kubeconfig: %v", err)
+				logger.Fatal("Failed to build kubeconfig", "error", err)
 			}
 		}
 
 		clientset, err = k8s.NewForConfig(config)
 		if err != nil {
-			log.Fatalf("Failed to create k8s client: %v", err)
+			logger.Fatal("Failed to create k8s client", "error", err)
 		}
 		resolver = kubernetes.NewK8sResolver(clientset)
 	}
@@ -90,14 +91,14 @@ func main() {
 	if certFile := os.Getenv("TLS_CERT_FILE"); certFile != "" {
 		keyFile := os.Getenv("TLS_KEY_FILE")
 		if keyFile == "" {
-			log.Fatal("TLS_KEY_FILE must be set when TLS_CERT_FILE is set")
+			logger.Fatal("TLS_KEY_FILE must be set when TLS_CERT_FILE is set")
 		}
-		log.Printf("Using File TLS provider (cert: %s, key: %s)", certFile, keyFile)
+		logger.Info("Using File TLS provider", "cert", certFile, "key", keyFile)
 		tlsProvider = filesystem.NewFileTLSProvider(certFile, keyFile)
 	} else if secretName := os.Getenv("TLS_SECRET_NAME"); secretName != "" {
 		// Priority 2: Kubernetes Secret (Explicit configuration)
 		if clientset == nil {
-			log.Fatal("Cannot use Kubernetes TLS provider without Kubernetes environment (STATIC_BACKENDS is set)")
+			logger.Fatal("Cannot use Kubernetes TLS provider without Kubernetes environment (STATIC_BACKENDS is set)")
 		}
 		namespace := os.Getenv("POD_NAMESPACE")
 		if namespace == "" {
@@ -106,30 +107,30 @@ func main() {
 		if namespace == "" {
 			namespace = "default"
 		}
-		log.Printf("Using Kubernetes TLS provider (secret: %s/%s)", namespace, secretName)
+		logger.Info("Using Kubernetes TLS provider", "namespace", namespace, "secret", secretName)
 		tlsProvider = kubernetes.NewK8sTLSProvider(clientset, namespace, secretName)
 	} else {
-		log.Println("Using Memory TLS provider (Default)")
+		logger.Info("Using Memory TLS provider (Default)")
 		tlsProvider = memory.NewMemoryTLSProvider()
 	}
 
 	// Check if we should generate and store a self-signed certificate
 	if os.Getenv("TLS_ENABLE_SELF_SIGNED") == "true" {
-		log.Println("TLS_ENABLE_SELF_SIGNED is true. Generating and storing self-signed certificate...")
+		logger.Info("TLS_ENABLE_SELF_SIGNED is true. Generating and storing self-signed certificate...")
 		certPEM, keyPEM, err := utils.GenerateSelfSignedCert()
 		if err != nil {
-			log.Fatalf("Failed to generate self-signed cert: %v", err)
+			logger.Fatal("Failed to generate self-signed cert", "error", err)
 		}
 
 		if err := tlsProvider.Store(context.Background(), certPEM, keyPEM); err != nil {
-			log.Fatalf("Failed to store self-signed cert: %v", err)
+			logger.Fatal("Failed to store self-signed cert", "error", err)
 		}
 	}
 
 	// Load initial certificate
 	cert, err := tlsProvider.GetCertificate(context.Background())
 	if err != nil {
-		log.Fatalf("Failed to load initial certificate: %v", err)
+		logger.Fatal("Failed to load initial certificate", "error", err)
 	}
 
 	// 4. Protocol Layer (PostgreSQL)
@@ -147,9 +148,9 @@ func main() {
 
 	listener, err := net.Listen("tcp", ":"+startPort)
 	if err != nil {
-		log.Fatalf("Failed to listen: %v", err)
+		logger.Fatal("Failed to listen", "error", err)
 	}
-	log.Printf("Listening on :%s", startPort)
+	logger.Info("Listening on", "port", startPort)
 
 	server := &core.Server{
 		Listener:        listener,
@@ -161,6 +162,6 @@ func main() {
 	healthServer.SetReady(true)
 
 	if err := server.Serve(); err != nil {
-		log.Fatalf("Server error: %v", err)
+		logger.Fatal("Server error", "error", err)
 	}
 }

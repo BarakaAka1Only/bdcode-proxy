@@ -3,10 +3,11 @@ package core
 import (
 	"context"
 	"io"
-	"log"
 	"net"
 	"sync"
 	"time"
+
+	"github.com/hasirciogluhq/xdatabase-proxy/cmd/proxy/internal/logger"
 )
 
 // Server is the generic TCP proxy server.
@@ -35,7 +36,7 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 	// The proxy doesn't know if this is Postgres or MySQL.
 	metadata, clientConn, err := s.ProtocolHandler.Handshake(clientConn)
 	if err != nil {
-		log.Printf("Handshake failed: %v", err)
+		logger.Error("Handshake failed", "error", err, "remote_addr", clientConn.RemoteAddr())
 		return
 	}
 
@@ -46,14 +47,14 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 
 	backendAddr, err := s.Resolver.Resolve(ctx, metadata)
 	if err != nil {
-		log.Printf("Resolution failed: %v", err)
+		logger.Error("Resolution failed", "error", err, "remote_addr", clientConn.RemoteAddr())
 		return
 	}
 
 	// 3. Dial Backend (Network Logic)
 	backendConn, err := net.Dial("tcp", backendAddr)
 	if err != nil {
-		log.Printf("Dial failed to %s: %v", backendAddr, err)
+		logger.Error("Dial failed", "backend_addr", backendAddr, "error", err, "remote_addr", clientConn.RemoteAddr())
 		return
 	}
 	defer backendConn.Close()
@@ -61,7 +62,7 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 	// 3.5. Forward Startup Message (if present in metadata)
 	if rawMsg, ok := metadata["_raw_startup_message"]; ok {
 		if _, err := backendConn.Write([]byte(rawMsg)); err != nil {
-			log.Printf("Failed to forward startup message: %v", err)
+			logger.Error("Failed to forward startup message", "error", err, "remote_addr", clientConn.RemoteAddr())
 			return
 		}
 	}
