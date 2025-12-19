@@ -44,7 +44,7 @@ cd xdatabase-proxy
 go mod download
 
 # Build the project
-go build -o xdatabase-proxy apps/proxy/main.go
+go build -o xdatabase-proxy cmd/proxy/main.go
 ```
 
 ## Configuration

@@ -5,4 +5,4 @@
 NAMESPACE="test" \
     POSTGRESQL_PROXY_ENABLED="true" \
     POSTGRESQL_PROXY_START_PORT="1881" \
-    go run apps/proxy/main.go
+    go run cmd/proxy/main.go

@@ -5,7 +5,7 @@ WORKDIR /app
 COPY . .
 
 RUN go mod download
-RUN CGO_ENABLED=0 go build -o main apps/proxy/main.go
+RUN CGO_ENABLED=0 go build -o main cmd/proxy/main.go
 
 FROM alpine:latest as runner
 
