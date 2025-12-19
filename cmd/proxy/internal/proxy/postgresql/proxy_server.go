@@ -1,4 +1,4 @@
-package postgresql
+package postgresql_proxy
 
 import (
 	"bytes" // Buffer kullanmak için eklendi
@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hasirciogli/xdatabase-proxy/pkg/kubernetes"
+	"github.com/hasirciogluhq/xdatabase-proxy/pkg/kubernetes"
 )
 
 const (
