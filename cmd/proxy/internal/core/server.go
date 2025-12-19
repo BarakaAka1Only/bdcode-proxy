@@ -58,6 +58,14 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 	}
 	defer backendConn.Close()
 
+	// 3.5. Forward Startup Message (if present in metadata)
+	if rawMsg, ok := metadata["_raw_startup_message"]; ok {
+		if _, err := backendConn.Write([]byte(rawMsg)); err != nil {
+			log.Printf("Failed to forward startup message: %v", err)
+			return
+		}
+	}
+
 	// 4. Pipe Data (Proxy Logic)
 	var wg sync.WaitGroup
 	wg.Add(2)

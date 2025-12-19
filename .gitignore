@@ -9,3 +9,5 @@ build/
 
 # Ignore all files in the dist directory
 dist/
+
+./development_data
