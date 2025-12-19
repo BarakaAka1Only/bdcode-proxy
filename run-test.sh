@@ -1,0 +1,1 @@
+POSTGRESQL_PROXY_ENABLED=true STATIC_BACKENDS=dblocal=localhost:5432 TLS_CERT_FILE=./tls.cert TLS_KEY_FILE=./tls.key POSTGRESQL_PROXY_START_PORT=7878 go run ./cmd/proxy/main.go
