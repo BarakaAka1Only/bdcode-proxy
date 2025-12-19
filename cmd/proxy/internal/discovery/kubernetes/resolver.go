@@ -31,23 +31,50 @@ func NewK8sResolver(clientset *kubernetes.Clientset) *K8sResolver {
 }
 
 func (r *K8sResolver) Resolve(ctx context.Context, metadata core.RoutingMetadata) (string, error) {
-	dbName, ok := metadata["database"]
+	deploymentID, ok := metadata["deployment_id"]
 	if !ok {
-		return "", fmt.Errorf("metadata missing 'database' key")
+		return "", fmt.Errorf("metadata missing 'deployment_id' (check connection string format: user.deployment_id[.pool])")
 	}
+	pooled := metadata["pooled"] // "true" or "false"
 
-	// Scan services for matching annotation
-	// In a real implementation, use an Indexer for O(1) lookup
+	// Scan services for matching labels
 	for _, obj := range r.store.List() {
 		svc, ok := obj.(*corev1.Service)
 		if !ok {
 			continue
 		}
 
-		if targetDB, exists := svc.Annotations["xdatabase-proxy/db-name"]; exists && targetDB == dbName {
-			return fmt.Sprintf("%s.%s.svc.cluster.local:%d", svc.Name, svc.Namespace, svc.Spec.Ports[0].Port), nil
+		labels := svc.Labels
+		if labels["xdatabase-proxy-enabled"] != "true" {
+			continue
+		}
+
+		if labels["xdatabase-proxy-deployment-id"] == deploymentID &&
+			labels["xdatabase-proxy-pooled"] == pooled {
+
+			// Find the target port
+			// If xdatabase-proxy-destination-port label is set, use it to find the port in Spec
+			// Otherwise use the first port
+			var port int32
+			// We are ignoring the specific port value from label for now and just taking the first port
+			// In a more robust implementation, we should parse destPortStr and find the matching port in Spec
+			if _, ok := labels["xdatabase-proxy-destination-port"]; ok {
+				if len(svc.Spec.Ports) > 0 {
+					port = svc.Spec.Ports[0].Port
+				}
+			} else {
+				if len(svc.Spec.Ports) > 0 {
+					port = svc.Spec.Ports[0].Port
+				}
+			}
+
+			if port == 0 {
+				continue
+			}
+
+			return fmt.Sprintf("%s.%s.svc.cluster.local:%d", svc.Name, svc.Namespace, port), nil
 		}
 	}
 
-	return "", fmt.Errorf("database '%s' not found", dbName)
+	return "", fmt.Errorf("service not found for deployment_id='%s', pooled='%s'", deploymentID, pooled)
 }

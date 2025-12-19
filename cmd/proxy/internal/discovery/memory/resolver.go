@@ -15,7 +15,8 @@ type Resolver struct {
 }
 
 // NewResolver creates a new memory resolver from a comma-separated string
-// Format: "db1=host1:port,db2=host2:port"
+// Format: "deployment_id[.pool]=host:port,..."
+// Example: "db1=localhost:5432,db1.pool=localhost:6432"
 func NewResolver(mappingStr string) (*Resolver, error) {
 	backends := make(map[string]string)
 	if mappingStr == "" {
@@ -28,23 +29,35 @@ func NewResolver(mappingStr string) (*Resolver, error) {
 		if len(parts) != 2 {
 			return nil, fmt.Errorf("invalid mapping format: %s", pair)
 		}
-		name := strings.TrimSpace(parts[0])
+		key := strings.TrimSpace(parts[0])
 		addr := strings.TrimSpace(parts[1])
-		backends[name] = addr
+		backends[key] = addr
 	}
 
 	return &Resolver{backends: backends}, nil
 }
 
 func (r *Resolver) Resolve(ctx context.Context, metadata core.RoutingMetadata) (string, error) {
+	deploymentID, ok := metadata["deployment_id"]
+	if !ok {
+		return "", fmt.Errorf("metadata missing 'deployment_id'")
+	}
+	pooled := metadata["pooled"]
+
+	// Construct lookup key: deployment_id or deployment_id.pool
+	key := deploymentID
+	if pooled == "true" {
+		key = deploymentID + ".pool"
+	}
+
 	r.mu.RLock()
-	addr, ok := r.backends[metadata["database"]]
+	addr, ok := r.backends[key]
 	r.mu.RUnlock()
 
 	if !ok {
-		return "", fmt.Errorf("backend not found for database: %s", metadata["database"])
+		return "", fmt.Errorf("backend not found for key: %s", key)
 	}
 
-	fmt.Printf("MemoryResolver: Routing %s to %s\n", metadata["database"], addr)
+	fmt.Printf("MemoryResolver: Routing %s (pooled=%s) to %s\n", deploymentID, pooled, addr)
 	return addr, nil
 }
