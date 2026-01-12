@@ -37,7 +37,7 @@ func NewResolver(mappingStr string) (*Resolver, error) {
 	return &Resolver{backends: backends}, nil
 }
 
-func (r *Resolver) Resolve(ctx context.Context, metadata core.RoutingMetadata) (string, error) {
+func (r *Resolver) Resolve(ctx context.Context, metadata core.RoutingMetadata, databaseType core.DatabaseType) (string, error) {
 	deploymentID, ok := metadata["deployment_id"]
 	if !ok {
 		return "", fmt.Errorf("metadata missing 'deployment_id'")

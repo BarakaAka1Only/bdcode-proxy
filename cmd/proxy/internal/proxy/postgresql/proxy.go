@@ -76,7 +76,7 @@ func (p *PostgresProxy) HandleConnection(clientConn net.Conn) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	backendAddr, err := p.Resolver.Resolve(ctx, metadata)
+	backendAddr, err := p.Resolver.Resolve(ctx, metadata, core.DatabaseTypeMysql)
 	if err != nil {
 		logger.Error("Resolution failed", "error", err, "remote_addr", clientConn.RemoteAddr())
 		_ = p.sendErrorResponse(clientConn, &ErrorResponse{

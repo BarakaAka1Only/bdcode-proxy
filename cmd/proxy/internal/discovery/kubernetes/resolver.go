@@ -30,7 +30,7 @@ func NewK8sResolver(clientset *kubernetes.Clientset) *K8sResolver {
 	}
 }
 
-func (r *K8sResolver) Resolve(ctx context.Context, metadata core.RoutingMetadata) (string, error) {
+func (r *K8sResolver) Resolve(ctx context.Context, metadata core.RoutingMetadata, databaseType core.DatabaseType) (string, error) {
 	deploymentID, ok := metadata["deployment_id"]
 	if !ok {
 		return "", fmt.Errorf("metadata missing 'deployment_id' (check connection string format: user.deployment_id[.pool])")
@@ -46,6 +46,10 @@ func (r *K8sResolver) Resolve(ctx context.Context, metadata core.RoutingMetadata
 
 		labels := svc.Labels
 		if labels["xdatabase-proxy-enabled"] != "true" {
+			continue
+		}
+
+		if labels["xdatabase-proxy-database-type"] != string(databaseType) {
 			continue
 		}
 

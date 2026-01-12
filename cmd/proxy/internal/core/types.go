@@ -13,7 +13,7 @@ type RoutingMetadata map[string]string
 // BackendResolver defines how to find a backend address based on metadata.
 // It is purely a lookup mechanism and knows nothing about the network.
 type BackendResolver interface {
-	Resolve(ctx context.Context, metadata RoutingMetadata) (string, error)
+	Resolve(ctx context.Context, metadata RoutingMetadata, databaseType DatabaseType) (string, error)
 }
 
 // ConnectionHandler defines the interface for handling a client connection.
@@ -41,3 +41,11 @@ type TLSProvider interface {
 	GetCertificate(ctx context.Context) (*tls.Certificate, error)
 	Store(ctx context.Context, certPEM, keyPEM []byte) error
 }
+
+type DatabaseType string
+
+const (
+	DatabaseTypePostgresql DatabaseType = "postgresql"
+	DatabaseTypeMysql      DatabaseType = "mysql"
+	DatabaseTypeScylla     DatabaseType = "scylla"
+)
