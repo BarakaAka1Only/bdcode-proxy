@@ -25,8 +25,8 @@ func NewHealthServer(addr string) *HealthServer {
 	// Default to not ready until explicitly set
 	hs.ready.Store(false)
 
-	mux.HandleFunc("/healthz", hs.handleHealthz)
-	mux.HandleFunc("/readyz", hs.handleReadyz)
+	mux.HandleFunc("/health", hs.handleHealth)
+	mux.HandleFunc("/ready", hs.handleReady)
 
 	return hs
 }
@@ -48,12 +48,12 @@ func (s *HealthServer) SetReady(ready bool) {
 	s.ready.Store(ready)
 }
 
-func (s *HealthServer) handleHealthz(w http.ResponseWriter, r *http.Request) {
+func (s *HealthServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
 }
 
-func (s *HealthServer) handleReadyz(w http.ResponseWriter, r *http.Request) {
+func (s *HealthServer) handleReady(w http.ResponseWriter, r *http.Request) {
 	if s.ready.Load() {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ready"))

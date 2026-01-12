@@ -2,177 +2,91 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
+	"fmt"
 	"net"
 	"os"
 
 	"github.com/hasirciogluhq/xdatabase-proxy/cmd/proxy/internal/api"
+	"github.com/hasirciogluhq/xdatabase-proxy/cmd/proxy/internal/config"
 	"github.com/hasirciogluhq/xdatabase-proxy/cmd/proxy/internal/core"
-	"github.com/hasirciogluhq/xdatabase-proxy/cmd/proxy/internal/discovery/kubernetes"
-	"github.com/hasirciogluhq/xdatabase-proxy/cmd/proxy/internal/discovery/memory"
+	"github.com/hasirciogluhq/xdatabase-proxy/cmd/proxy/internal/factory"
 	"github.com/hasirciogluhq/xdatabase-proxy/cmd/proxy/internal/logger"
-	postgresql_proxy "github.com/hasirciogluhq/xdatabase-proxy/cmd/proxy/internal/proxy/postgresql"
-	"github.com/hasirciogluhq/xdatabase-proxy/cmd/proxy/internal/storage/filesystem"
-	"github.com/hasirciogluhq/xdatabase-proxy/cmd/proxy/internal/utils"
-
-	k8s "k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 func main() {
-	logger.Init()
-	logger.Info("Starting xdatabase-proxy...")
+	ctx := context.Background()
 
-	// Check if proxy is enabled
-	if os.Getenv("POSTGRESQL_PROXY_ENABLED") != "true" {
-		logger.Warn("PostgreSQL proxy is not enabled (POSTGRESQL_PROXY_ENABLED != true)")
-		// We might still want to run health checks or just exit?
-		// For now, let's assume we just block or exit.
-		// But usually a pod runs the proxy if it's deployed.
-		// Let's just log and continue, or maybe return.
-		// The original code returned.
-		return
-	}
-
-	// 1. Health Server
-	healthServer := api.NewHealthServer(":8080")
-	healthServer.Start()
-
-	// 2. Infrastructure Layer (Resolver)
-	var resolver core.BackendResolver
-	var clientset *k8s.Clientset
-
-	if staticBackends := os.Getenv("STATIC_BACKENDS"); staticBackends != "" {
-		logger.Info("Using Memory Resolver (STATIC_BACKENDS set)")
-		memResolver, err := memory.NewResolver(staticBackends)
-		if err != nil {
-			logger.Fatal("Failed to create memory resolver", "error", err)
-		}
-		resolver = memResolver
-	} else {
-		// Kubernetes Resolver
-		kubeconfig := os.Getenv("KUBECONFIG")
-		if kubeconfig == "" {
-			kubeconfig = os.Getenv("HOME") + "/.kube/config"
-		}
-
-		// Use KUBE_CONTEXT if provided (dev mode)
-		contextName := os.Getenv("KUBE_CONTEXT")
-
-		configOverrides := &clientcmd.ConfigOverrides{}
-		if contextName != "" {
-			configOverrides.CurrentContext = contextName
-		}
-
-		config, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-			&clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfig},
-			configOverrides,
-		).ClientConfig()
-
-		if err != nil {
-			// Fallback to in-cluster config
-			config, err = clientcmd.BuildConfigFromFlags("", "")
-			if err != nil {
-				logger.Fatal("Failed to build kubeconfig", "error", err)
-			}
-		}
-
-		clientset, err = k8s.NewForConfig(config)
-		if err != nil {
-			logger.Fatal("Failed to create k8s client", "error", err)
-		}
-		resolver = kubernetes.NewK8sResolver(clientset)
-	}
-
-	// 3. TLS Provider
-	var tlsProvider core.TLSProvider
-
-	// Priority 1: File-based TLS (Explicit configuration)
-	if certFile := os.Getenv("TLS_CERT_FILE"); certFile != "" {
-		keyFile := os.Getenv("TLS_KEY_FILE")
-		if keyFile == "" {
-			logger.Fatal("TLS_KEY_FILE must be set when TLS_CERT_FILE is set")
-		}
-		logger.Info("Using File TLS provider", "cert", certFile, "key", keyFile)
-		tlsProvider = filesystem.NewFileTLSProvider(certFile, keyFile)
-	} else if secretName := os.Getenv("TLS_SECRET_NAME"); secretName != "" {
-		// Priority 2: Kubernetes Secret (Explicit configuration)
-		if clientset == nil {
-			logger.Fatal("Cannot use Kubernetes TLS provider without Kubernetes environment (STATIC_BACKENDS is set)")
-		}
-		namespace := os.Getenv("POD_NAMESPACE")
-		if namespace == "" {
-			namespace = os.Getenv("NAMESPACE") // Fallback to generic NAMESPACE env
-		}
-		if namespace == "" {
-			namespace = "default"
-		}
-		logger.Info("Using Kubernetes TLS provider", "namespace", namespace, "secret", secretName)
-		tlsProvider = kubernetes.NewK8sTLSProvider(clientset, namespace, secretName)
-	} else {
-		logger.Info("Using Memory TLS provider (Default)")
-		tlsProvider = memory.NewMemoryTLSProvider()
-	}
-
-	// Try to load existing certificate first
-	cert, err := tlsProvider.GetCertificate(context.Background())
-
-	// If certificate doesn't exist and TLS_ENABLE_SELF_SIGNED is true, generate it
-	if err != nil && os.Getenv("TLS_ENABLE_SELF_SIGNED") == "true" {
-		logger.Info("Certificate not found. TLS_ENABLE_SELF_SIGNED is true. Generating and storing self-signed certificate...")
-		certPEM, keyPEM, certErr := utils.GenerateSelfSignedCert()
-		if certErr != nil {
-			logger.Fatal("Failed to generate self-signed cert", "error", certErr)
-		}
-
-		// Store the certificate (handles race condition for Kubernetes secrets)
-		if storeErr := tlsProvider.Store(context.Background(), certPEM, keyPEM); storeErr != nil {
-			// If store fails (possibly due to race condition), try to load again
-			logger.Warn("Failed to store self-signed cert, attempting to load existing cert", "error", storeErr)
-			cert, err = tlsProvider.GetCertificate(context.Background())
-			if err != nil {
-				logger.Fatal("Failed to load certificate after store failure", "error", err)
-			}
-		} else {
-			// Store succeeded, load the newly created certificate
-			cert, err = tlsProvider.GetCertificate(context.Background())
-			if err != nil {
-				logger.Fatal("Failed to load newly created certificate", "error", err)
-			}
-		}
-	} else if err != nil {
-		// Certificate doesn't exist and TLS_ENABLE_SELF_SIGNED is not true
-		logger.Fatal("Failed to load initial certificate. Set TLS_ENABLE_SELF_SIGNED=true to auto-generate", "error", err)
-	}
-
-	// 4. Protocol Layer (PostgreSQL)
-	postgresProxy := &postgresql_proxy.PostgresProxy{
-		TLSConfig: &tls.Config{
-			Certificates: []tls.Certificate{*cert},
-		},
-		Resolver: resolver,
-	}
-
-	// 5. Core Layer (Proxy)
-	startPort := os.Getenv("POSTGRESQL_PROXY_START_PORT")
-	if startPort == "" {
-		startPort = "5432"
-	}
-
-	listener, err := net.Listen("tcp", ":"+startPort)
+	// Load configuration from environment
+	cfg, err := config.LoadFromEnv()
 	if err != nil {
-		logger.Fatal("Failed to listen", "error", err)
+		fmt.Fprintf(os.Stderr, "Configuration error: %v\n", err)
+		os.Exit(1)
 	}
-	logger.Info("Listening on", "port", startPort)
 
+	// Initialize logger
+	logger.Init()
+	logger.Info("Starting xdatabase-proxy...",
+		"database", cfg.DatabaseType,
+		"runtime", cfg.Runtime,
+		"discovery", cfg.DiscoveryMode,
+		"tls_mode", cfg.TLSMode)
+
+	// Start health server
+	healthServer := api.NewHealthServer(":" + cfg.HealthServerPort)
+	healthServer.Start()
+	logger.Info("Health server started", "port", cfg.HealthServerPort)
+
+	// Create backend resolver
+	resolverFactory := factory.NewResolverFactory(cfg)
+	resolver, clientset, err := resolverFactory.Create(ctx)
+	if err != nil {
+		logger.Fatal("Failed to create backend resolver", "error", err)
+	}
+
+	// Create TLS provider (optional)
+	var tlsProvider core.TLSProvider
+	if cfg.TLSEnabled {
+		tlsFactory := factory.NewTLSFactory(cfg)
+		var err error
+		tlsProvider, err = tlsFactory.Create(ctx, clientset)
+		if err != nil {
+			logger.Fatal("Failed to create TLS provider", "error", err)
+		}
+
+		// Ensure certificate exists (load or generate)
+		if err := tlsFactory.EnsureCertificate(ctx, tlsProvider); err != nil {
+			logger.Fatal("Failed to ensure certificate", "error", err)
+		}
+		logger.Info("TLS enabled and configured")
+	} else {
+		logger.Warn("TLS is disabled - connections will not be encrypted")
+	}
+
+	// Create protocol-specific proxy handler
+	proxyFactory := factory.NewProxyFactory(cfg)
+	connectionHandler, err := proxyFactory.Create(ctx, tlsProvider, resolver)
+	if err != nil {
+		logger.Fatal("Failed to create proxy handler", "error", err)
+	}
+
+	// Start TCP listener
+	listener, err := net.Listen("tcp", ":"+cfg.ProxyStartPort)
+	if err != nil {
+		logger.Fatal("Failed to start listener", "port", cfg.ProxyStartPort, "error", err)
+	}
+	logger.Info("Proxy listening", "port", cfg.ProxyStartPort, "database", cfg.DatabaseType)
+
+	// Create and start server
 	server := &core.Server{
 		Listener:          listener,
-		ConnectionHandler: postgresProxy,
+		ConnectionHandler: connectionHandler,
 	}
 
 	// Mark as ready
 	healthServer.SetReady(true)
+	logger.Info("Proxy is ready to accept connections")
 
+	// Start serving (blocking)
 	if err := server.Serve(); err != nil {
 		logger.Fatal("Server error", "error", err)
 	}
