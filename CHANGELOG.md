@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Security
+
+## [2.0.0] - 2026-01-12
+
+### Added
 - **Runtime Environment Detection**: Auto-detect execution environment (Kubernetes/Container/VM)
 - **Flexible Discovery Modes**: 
   - Kubernetes discovery from any runtime (in-cluster or remote with kubeconfig)
