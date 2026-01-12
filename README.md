@@ -90,7 +90,7 @@ go build -o xdatabase-proxy cmd/proxy/main.go
 | Variable         | Description                                                                            | Required | Default      | Example Value                           | When to Use |
 | ---------------- | -------------------------------------------------------------------------------------- | -------- | ------------ | --------------------------------------- | ----------- |
 | DISCOVERY_MODE   | Discovery strategy: `kubernetes` or `static`                                           | No       | kubernetes   | static                                  | Auto-set to `static` if `STATIC_BACKENDS` is provided |
-| STATIC_BACKENDS  | Static backend configuration (JSON array)                                              | Conditional | -         | [{"name":"db1","host":"10.0.1.5","port":5432}] | **Required** when not using Kubernetes discovery |
+| STATIC_BACKENDS  | Static backend mapping (`deployment_id[.pool]=host:port` comma-separated)              | Conditional | -         | db1=10.0.1.5:5432,db1.pool=10.0.1.5:6432 | **Required** when not using Kubernetes discovery |
 | KUBECONFIG       | Path to kubeconfig file                                                                | Conditional | ~/.kube/config | /path/to/config                    | **Required** when `DISCOVERY_MODE=kubernetes` AND running outside cluster (VM/Container) |
 | KUBE_CONTEXT     | Kubernetes context name                                                                | No       | -            | production-cluster                      | Use for multi-cluster setups with kubeconfig |
 
@@ -104,10 +104,15 @@ go build -o xdatabase-proxy cmd/proxy/main.go
 **Configuration Rules:**
 - ✅ **In Kubernetes Pod**: `DISCOVERY_MODE=kubernetes` (default, uses in-cluster config)
 - ✅ **VM/Container → Remote K8s**: `DISCOVERY_MODE=kubernetes` + `KUBECONFIG=/path/to/config`
-- ✅ **Static Backends**: `STATIC_BACKENDS='[...]'` (auto-sets `DISCOVERY_MODE=static`)
+- ✅ **Static Backends**: `STATIC_BACKENDS='db1=host:5432,db1.pool=host:6432'` (auto-sets `DISCOVERY_MODE=static`)
 - ⚠️ **Cannot mix**: Cannot use both `STATIC_BACKENDS` and `DISCOVERY_MODE=kubernetes` at same time
 - ⚠️ **KUBECONFIG required**: If `DISCOVERY_MODE=kubernetes` + not in cluster → must provide `KUBECONFIG`
 - ⚠️ **NAMESPACE required**: If `DISCOVERY_MODE=kubernetes` → must provide `NAMESPACE`
+
+**Static Backends Format:**
+- `deployment_id=host:port` → direct connections
+- `deployment_id.pool=host:port` → pooled connections (optional)
+- Multiple entries comma-separated, e.g. `db1=10.0.1.5:5432,db1.pool=10.0.1.5:6432`
 
 #### TLS/SSL Configuration
 
@@ -162,17 +167,42 @@ go build -o xdatabase-proxy cmd/proxy/main.go
 | TLS_ENABLE_SELF_SIGNED       | TLS_AUTO_GENERATE                            |
 | POD_NAMESPACE                | NAMESPACE                                    |
 
-### Kubernetes Labels
+### Kubernetes Service Discovery
 
-The following labels are required for services in Kubernetes discovery mode:
+Labels act as a **composite index** for service discovery. Proxy uses `(xdatabase-proxy-deployment-id, xdatabase-proxy-database-type, xdatabase-proxy-pooled)` as the lookup key.
 
-| Label                            | Description                                        | Example Value   |
-| -------------------------------- | -------------------------------------------------- | --------------- |
-| xdatabase-proxy-enabled          | Whether the service should be managed by the proxy | true            |
-| xdatabase-proxy-deployment-id    | Database deployment ID                             | db-deployment-1 |
-| xdatabase-proxy-database-type    | Database type                                      | postgresql      |
-| xdatabase-proxy-pooled           | Whether this is a connection pooling service       | true/false      |
-| xdatabase-proxy-destination-port | Target port for the database connection            | 5432            |
+**Label Matching Strategy:**
+- Proxy searches for services matching the composite index
+- If multiple services match the same criteria, **the first one is used** (like `findFirst()` in databases)
+- Extra labels are ignored (safe to add additional labels)
+- Missing optional labels are handled gracefully
+
+| Label                             | Type    | Description                                        | Example Value   | Index |
+| --------------------------------- | ------- | -------------------------------------------------- | --------------- | ----- |
+| **xdatabase-proxy-deployment-id** | String  | Database deployment ID (routing key)               | db-deployment-1 | ✅ YES |
+| **xdatabase-proxy-database-type** | String  | Database type (filter)                             | postgresql      | ✅ YES |
+| **xdatabase-proxy-pooled**        | Boolean | Pooled connections (true/false)                    | true            | ✅ YES |
+| xdatabase-proxy-destination-port  | Integer | Target port for the database connection            | 5432            | —     |
+| xdatabase-proxy-enabled           | Boolean | (Deprecated) Whether service is managed by proxy   | true            | —     |
+
+**Label Indexing Example:**
+
+When proxy receives connection: `postgres://user.db-prod.pool@proxy:5432/db`
+- Extracts: `deployment_id=db-prod`, `pooled=true`
+- Searches: services with `deployment_id=db-prod` AND `pooled=true`
+- Returns: **first matching service** (even if multiple exist)
+
+```
+Cluster Services:
+1. Service: db-prod-1     (deployment_id=db-prod, pooled=true)   → ✅ MATCHED & USED
+2. Service: db-prod-2     (deployment_id=db-prod, pooled=true)   → ⏭️ SKIPPED (duplicate)
+3. Service: db-prod-pool  (deployment_id=db-prod, pooled=false)  → ⏭️ SKIPPED (diff pooled)
+4. Service: db-staging    (deployment_id=db-staging, pooled=true)→ ⏭️ SKIPPED (diff id)
+```
+
+**Connection String Routing:**
+- `postgres://user.db-prod@proxy:5432/db` → uses `deployment_id=db-prod, pooled=false`
+- `postgres://user.db-prod.pool@proxy:5432/db` → uses `deployment_id=db-prod, pooled=true`
 
 ## Usage Examples
 
@@ -206,7 +236,7 @@ docker run -d \
 export DATABASE_TYPE=postgresql
 export RUNTIME=vm
 export DISCOVERY_MODE=static
-export STATIC_BACKENDS='[{"name":"db1","host":"10.0.1.5","port":5432},{"name":"db2","host":"10.0.1.6","port":5432}]'
+export STATIC_BACKENDS='db1=10.0.1.5:5432,db1.pool=10.0.1.5:6432,db2=10.0.1.6:5432'
 export TLS_AUTO_GENERATE=true
 export TLS_AUTO_RENEW=true
 
@@ -262,20 +292,44 @@ postgresql://myuser.db-deployment-1.pool@localhost:5432/mydb
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     XDatabase Proxy                         │
-│                                                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
-│  │   Config     │  │   Factory    │  │ Orchestrator  │    │
-│  │  Management  │→ │   Pattern    │→ │  (main.go)    │    │
-│  └──────────────┘  └──────────────┘  └──────────────┘    │
-│                                                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐    │
-│  │  Discovery   │  │     TLS      │  │    Proxy      │    │
-│  │   (K8s/Static)│ │   Provider   │  │   Handler     │    │
-│  └──────────────┘  └──────────────┘  └──────────────┘    │
-└─────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────┐
+│                       xdatabase-proxy                         │
+│                                                               │
+│  ┌──────────────────┐    ┌──────────────────────┐             │
+│  │ Config & Runtime  │    │ Orchestrator (app.go)│             │
+│  │  env -> types    │ →  │ wires factories      │             │
+│  └──────────────────┘    └──────────────────────┘             │
+│            |                          |                       │
+│            v                          v                       │
+│  ┌──────────────────┐    ┌──────────────────────┐             │
+│  │ ResolverFactory  │    │ TLSFactory           │             │
+│  │ (k8s | static)   │    │ (k8s | file | memory) │             │
+│  └──────────────────┘    └──────────────────────┘             │
+│            \                          /                       │
+│             v                        v                        │
+│              ┌────────────────────────────────┐               │
+│              │ ProxyFactory (PostgreSQL)      │               │
+│              │ builds ConnectionHandler       │               │
+│              └────────────────────────────────┘               │
+│                               |                               │
+│                 ┌────────────────────────┐                    │
+│                 │ Core Server            │                    │
+│                 │ (TCP accept loop)      │                    │
+│                 └────────────────────────┘                    │
+│                               |                               │
+│                 ┌────────────────────────┐                    │
+│                 │ Health Server          │                    │
+│                 │ /health, /ready        │                    │
+│                 └────────────────────────┘                    │
+└───────────────────────────────────────────────────────────────┘
 ```
+
+**Flow**
+- Env → `config`: validates runtime, discovery, TLS, ports.
+- `app.Application`: initializes logger, resolver, TLS provider (optional), proxy handler, listener.
+- Factories: runtime-aware resolver (k8s/static), pluggable TLS (k8s/file/memory), protocol proxy.
+- `core.Server`: TCP accept loop, delegates to connection handler.
+- `api.HealthServer`: `/health` liveness, `/ready` readiness.
 
 ## Health Check Endpoints
 
