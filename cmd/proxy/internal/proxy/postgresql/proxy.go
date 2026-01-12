@@ -146,6 +146,17 @@ func (p *PostgresProxy) handshake(conn net.Conn) (core.RoutingMetadata, net.Conn
 	if len(payload) >= 4 {
 		code := int32(binary.BigEndian.Uint32(payload[0:4]))
 		if code == sslRequestCode {
+			// Check if TLS is configured
+			if p.TLSConfig == nil {
+				// Send 'N' to reject SSL (TLS disabled)
+				if _, err := conn.Write([]byte{'N'}); err != nil {
+					return nil, nil, nil, fmt.Errorf("failed to write SSL rejection response: %w", err)
+				}
+				logger.Info("SSL request rejected - TLS is disabled", "remote_addr", conn.RemoteAddr())
+				// Continue reading the next message (StartupMessage without SSL)
+				return p.handshake(conn)
+			}
+
 			// Send 'S' to accept SSL
 			if _, err := conn.Write([]byte{'S'}); err != nil {
 				return nil, nil, nil, fmt.Errorf("failed to write SSL response: %w", err)
