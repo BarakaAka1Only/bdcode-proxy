@@ -78,7 +78,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/hasirciogluhq/xdatabase-proxy
+          images: ghcr.io/BarakaAka1Only/bdcode-proxy
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -97,7 +97,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          platforms: linux/amd64,linux/arm64,linux/386
+          platforms: linux/arm64
 
   build-and-push-development:
     needs: test
@@ -127,7 +127,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/hasirciogluhq/xdatabase-proxy-development
+          images: ghcr.io/BarakaAka1Only/bdcode-proxy-development
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -146,7 +146,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          platforms: linux/amd64,linux/arm64,linux/386
+          platforms: linux/arm64
 
   create-release:
     needs: build-and-push
