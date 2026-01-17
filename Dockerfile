@@ -6,7 +6,7 @@ WORKDIR /app
 COPY . .
 
 RUN go mod download
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o main cmd/proxy/main.go
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o main cmd/proxy/main.go
 
 # Runtime stage
 FROM alpine:latest as runner
